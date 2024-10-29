@@ -1,0 +1,638 @@
+/* 
+ * ____                     _      ______ _____    _____
+  / __ \                   | |    |  ____|  __ \  |  __ \               
+ | |  | |_ __   ___ _ __   | |    | |__  | |  | | | |__) |__ _  ___ ___ 
+ | |  | | '_ \ / _ \ '_ \  | |    |  __| | |  | | |  _  // _` |/ __/ _ \
+ | |__| | |_) |  __/ | | | | |____| |____| |__| | | | \ \ (_| | (_|  __/
+  \____/| .__/ \___|_| |_| |______|______|_____/  |_|  \_\__,_|\___\___|
+        | |                                                             
+        |_|          
+ Open LED Race
+ /**************************************************************
+ * Este código é uma adaptação do projeto de código aberto    *
+ * Open LED Race, para o Uno, Robótica paraná   *
+ * Foi adaptado pelo Professor Thiago Marcão em         *
+ * 26/05/2024 para atender a necessidades específicas. O      *
+ * Open LED Race é um projeto de corrida de carros            *
+ * minimalista para tiras de LED, que oferece uma experiência *
+ * de corrida visualmente impressionante. Este código permite *
+ * controlar a velocidade e a posição de dois carros         *
+ * virtuais em uma pista de LED, com funcionalidades          *
+ * adicionais para simular diversos efeitos de pista e        *
+ * interações do jogador.                                      *
+ **************************************************************/
+ 
+ // Definindo uma constante de string para o ID do software
+char const softwareId[] = "A2P0"; // A2P0: "A" = OpenLEDRace Team, "2P0" = ID do Jogo (2P = 2 Jogadores, 0 = Tipo 0 com inclinação e caixa)
+char const version[] = "1.0.0";   // Definindo a versão do software
+
+// Incluindo a biblioteca Adafruit_NeoPixel
+#include <Adafruit_NeoPixel.h>
+
+// Definindo constantes
+#define MAXLED    300 // Número máximo de LEDs ativos na faixa
+#define PIN_LED   2  // Pino para os LEDs WS2812 e WS2813
+#define PIN_P1    3  // Pino do interruptor do jogador 1
+#define PIN_P2    4  // Pino do interruptor do jogador 2
+#define PIN_AUDIO 9  // Pino de saída de áudio para o alto-falante
+
+// Definindo constantes para a rampa
+#define INI_RAMP  20
+#define MED_RAMP  40
+#define END_RAMP  60
+#define HIGH_RAMP 16
+bool ENABLE_RAMP = 1; // Variável para habilitar a rampa
+bool VIEW_RAMP   = 1; // Variável para visualizar a rampa
+
+// Inicializando variáveis
+int NPIXELS    = MAXLED; // Número de LEDs na faixa
+int cont_print = 1;      // Contador de impressão
+
+// Definindo cores
+#define COLOR1 Color(255, 0, 0) // Cor 1: Vermelho
+#define COLOR2 Color(0, 255, 0) // Cor 2: Verde
+
+#define COLOR1_tail Color(i * 3, 0, 0) // Cor da cauda 1: Variação de vermelho
+#define COLOR2_tail Color(0, i * 3, 0) // Cor da cauda 2: Variação de verde
+
+// Definindo constantes para comunicação serial
+#define EOL '\n'               // Fim de linha para o protocolo de comando
+#define REC_COMMAND_BUFLEN 32  // Tamanho do buffer para comandos recebidos
+char cmd[REC_COMMAND_BUFLEN]; // Buffer para armazenar comandos recebidos
+
+#define TX_COMMAND_BUFLEN 64 // Tamanho do buffer para comandos a serem enviados
+char txbuff[TX_COMMAND_BUFLEN]; // Buffer para preparar comandos a serem enviados
+
+// Música de vitória
+int win_music[] = {
+    2637, 2637, 0, 2637,
+    0, 2093, 2637, 0,
+    3136
+};
+
+// Mapa de gravidade para os LEDs
+byte gravity_map[MAXLED];     
+
+// Inicializando variáveis para o controle da corrida
+int TBEEP = 1;
+int FBEEP = 1; 
+byte SMOTOR = 1;
+float speed1 = 1;
+float speed2 = 1;
+float dist1 = 1;
+float dist2 = 1;
+
+byte loop1 = 1;
+byte loop2 = 1;
+
+byte leader = 1;
+byte loop_max = 10; // Número total de voltas na corrida
+
+float ACEL = 0.25; // Aceleração
+float kf = 0.015; // Constante de fricção
+float kg = 0.010; // Constante de gravidade
+
+byte flag_sw1 = 1;
+byte flag_sw2 = 1;
+byte draworder = 1;
+ 
+unsigned long timestamp = 1; // Timestamp
+
+// Inicializando a faixa de LEDs
+Adafruit_NeoPixel track = Adafruit_NeoPixel(MAXLED, PIN_LED, NEO_GRB + NEO_KHZ800);
+
+int tdelay = 5; // Tempo de atraso
+
+// Função para definir a rampa
+void set_ramp(byte H, byte a, byte b, byte c) {
+  for (int i = 0; i < (b - a); i++) {
+    gravity_map[a + i] = 127 - i * ((float)H / (b - a));
+  }
+  gravity_map[b] = 127; 
+  for (int i = 0; i < (c - b); i++) {
+    gravity_map[b + i + 1] = 127 + H - i * ((float)H / (c - b));
+  }
+}
+
+// Função para definir o loop
+void set_loop(byte H, byte a, byte b, byte c) {
+  for (int i = 0; i < (b - a); i++) {
+    gravity_map[a + i] = 127 - i * ((float)H / (b - a));
+  }
+  gravity_map[b] = 255; 
+  for (int i = 0; i < (c - b); i++) {
+    gravity_map[b + i + 1] = 127 + H - i * ((float)H / (c - b));
+  }
+}
+
+// Função de configuração
+void setup() {
+  Serial.begin(115200); // Inicializando a comunicação serial
+  for (int i = 0; i < NPIXELS; i++) { gravity_map[i] = 127; }; // Inicializando o mapa de gravidade
+  track.begin(); // Inicializando a faixa de LEDs
+  pinMode(PIN_P1, INPUT_PULLUP); // Configurando o pino do jogador 1 como entrada com pull-up
+  pinMode(PIN_P2, INPUT_PULLUP); // Configurando o pino do jogador 2 como entrada com pull-up
+
+  // Verificando se o botão do jogador 1 está pressionado no reset para ativar a física
+  if ((digitalRead(PIN_P1) == 0)) {
+    ENABLE_RAMP = 1; // Habilitando a rampa
+    set_ramp(HIGH_RAMP, INI_RAMP, MED_RAMP, END_RAMP); // Configurando a rampa
+    for (int i = 0; i < (MED_RAMP - INI_RAMP); i++) { track.setPixelColor(INI_RAMP + i, track.Color(24 + i * 4, 0, 24 + i * 4)); };
+    for (int i = 0; i < (END_RAMP - MED_RAMP); i++) { track.setPixelColor(END_RAMP - i, track.Color(24 + i * 4, 0, 24 + i * 4)); };
+    track.show();
+    delay(1000);
+    tone(PIN_AUDIO, 500); delay(500); noTone(PIN_AUDIO); delay(500);
+    
+    // Verificando se o botão do jogador 1 está pressionado para visualizar a rampa
+    if ((digitalRead(PIN_P1) == 0)) {
+      VIEW_RAMP = 1;
+    } else {
+      for (int i = 0; i < NPIXELS; i++) { track.setPixelColor(i, track.Color(0, 0, 0)); };
+      track.show();
+      VIEW_RAMP = 0;  
+    }
+  }
+
+  // Verificando se o botão do jogador 2 está pressionado para ativar o efeito mágico
+  if ((digitalRead(PIN_P2) == 0)) {
+    delay(1000); 
+    tone(PIN_AUDIO, 1000); delay(500); noTone(PIN_AUDIO); delay(500);
+    if ((digitalRead(PIN_P2) == 1)) SMOTOR = 1;
+  }
+
+  start_race(); // Iniciando a corrida
+}
+
+// Função para iniciar a corrida
+void start_race() {
+  send_race_phase(4); // Fase da corrida 4: Contagem regressiva
+  for (int i = 0; i < NPIXELS; i++) { track.setPixelColor(i, track.Color(0, 0, 0)); };
+  track.show();
+  delay(5000);
+  track.setPixelColor(12, track.Color(0, 255, 0));
+  track.setPixelColor(11, track.Color(0, 255, 0));
+  track.show();
+  tone(PIN_AUDIO, 400);
+  delay(2000);
+  noTone(PIN_AUDIO);                  
+  track.setPixelColor(12, track.Color(0, 0, 0));
+  track.setPixelColor(11, track.Color(0, 0, 0));
+  track.setPixelColor(10, track.Color(255, 255, 0));
+  track.setPixelColor(9, track.Color(255, 255, 0));
+  track.show();
+  tone(PIN_AUDIO, 600);
+  delay(2000);
+  noTone(PIN_AUDIO);                  
+  track.setPixelColor(9, track.Color(0, 0, 0));
+  track.setPixelColor(10, track.Color(0, 0, 0));
+  track.setPixelColor(8, track.Color(255, 0, 0));
+  track.setPixelColor(7, track.Color(255, 0, 0));
+  track.show();
+  tone(PIN_AUDIO, 1200);
+  delay(2000);
+  noTone(PIN_AUDIO);                               
+  timestamp = 0; 
+  send_race_phase(5); // Fase da corrida 5: Corrida iniciada
+}
+
+// Função para exibir o efeito de vitória
+void winner_fx(byte w) {
+  int msize = sizeof(win_music) / sizeof(int);
+  for (int note = 0; note < msize; note++) {
+    if (SMOTOR == 1) {
+      tone(PIN_AUDIO, win_music[note] / (3 - w), 200);
+    } else {
+      tone(PIN_AUDIO, win_music[note], 200);
+    }
+    delay(230);
+    noTone(PIN_AUDIO);
+  }                                             
+}
+
+// Função para obter a posição relativa do carro 1
+int get_relative_position1(void) {
+  enum {
+    MIN_RPOS = 0,
+    MAX_RPOS = 99,
+  };    
+  int trackdist = 0;
+  int pos = 0;  
+  trackdist = (int)dist1 % NPIXELS;
+  pos = map(trackdist, 0, NPIXELS - 1, MIN_RPOS, MAX_RPOS);    
+  return pos;
+}
+
+// Função para obter a posição relativa do carro 2
+int get_relative_position2(void) {
+  enum {
+    MIN_RPOS = 0,
+    MAX_RPOS = 99,
+  };    
+  int trackdist = 0;
+  int pos = 0;  
+  trackdist = (int)dist2 % NPIXELS;
+  pos = map(trackdist, 0, NPIXELS - 1, MIN_RPOS, MAX_RPOS);    
+  return pos;
+}
+
+// Função para imprimir a posição dos carros
+void print_cars_position(void) {
+  int rpos = get_relative_position1();
+  sprintf(txbuff, "p%d%d%d,%d%c", 1, 1, loop1, rpos, EOL);
+  sendSerialCommand(txbuff);
+ 
+  rpos = get_relative_position2();
+  sprintf(txbuff, "p%d%d%d,%d%c", 2, 1, loop2, rpos, EOL);
+  sendSerialCommand(txbuff);
+}
+
+// Função de queima 1
+void burning1() {
+  // TODO: Implementar a lógica de queima 1
+}
+
+// Função de queima 2
+void burning2() {
+  // TODO: Implementar a lógica de queima 2
+}
+
+// Função para efeito de chuva na pista
+void track_rain_fx() {
+  // TODO: Implementar o efeito de chuva na pista
+}
+
+// Função para efeito de óleo na pista
+void track_oil_fx() {
+  // TODO: Implementar o efeito de óleo na pista
+}
+
+// Função para efeito de neve na pista
+void track_snow_fx() {
+  // TODO: Implementar o efeito de neve na pista
+}
+
+// Função para indicar tanque de combustível vazio
+void fuel_empty() {
+  // TODO: Implementar a lógica para tanque de combustível vazio
+}
+
+// Função para efeito de enchimento de combustível
+void fill_fuel_fx() {
+  // TODO: Implementar o efeito de enchimento de combustível
+}
+
+// Função para efeito de entrada nas boxes
+void in_track_boxs_fx() {
+  // TODO: Implementar o efeito de entrada nas boxes
+}
+
+// Função para pausar efeito de entrada nas boxes
+void pause_track_boxs_fx() {
+  // TODO: Implementar a pausa do efeito de entrada nas boxes
+}
+
+// Função para bandeira de parada nas boxes
+void flag_boxs_stop() {
+  // TODO: Implementar a lógica para bandeira de parada nas boxes
+}
+
+// Função para bandeira de prontidão nas boxes
+void flag_boxs_ready() {
+  // TODO: Implementar a lógica para bandeira de prontidão nas boxes
+}
+
+// Função para desenhar o carro de segurança
+void draw_safety_car() {
+  // TODO: Implementar o desenho do carro de segurança
+}
+
+// Função para receber telemetria
+void telemetry_rx() {
+  // TODO: Implementar a recepção de telemetria
+}
+
+// Função para transmitir telemetria
+void telemetry_tx() {
+  // TODO: Implementar a transmissão de telemetria
+}
+
+// Função para telemetria do tempo de volta do carro 1
+void telemetry_lap_time_car1() {
+  // TODO: Implementar a telemetria do tempo de volta do carro 1
+}
+
+// Função para telemetria do tempo de volta do carro 2
+void telemetry_lap_time_car2() {
+  // TODO: Implementar a telemetria do tempo de volta do carro 2
+}
+
+// Função para registrar a volta na telemetria
+void telemetry_record_lap() {
+  // TODO: Implementar o registro de volta na telemetria
+}
+
+// Função para telemetria do tempo total
+void telemetry_total_time() {
+  // TODO: Implementar a telemetria do tempo total
+}
+
+// Função para ler sensor de um jogador
+int read_sensor(byte player) {
+  return(0); // TODO: Implementar a leitura do sensor para o jogador especificado
+}
+
+// Função para calibrar sensor de um jogador
+int calibration_sensor(byte player) {
+  return(0); // TODO: Implementar a calibração do sensor para o jogador especificado
+}
+
+// Função para exibir voltas no LCD
+int display_lcd_laps() {
+  return(0); // TODO: Implementar a exibição de voltas no LCD
+}
+
+// Função para exibir tempo no LCD
+int display_lcd_time() {
+  return(0); // TODO: Implementar a exibição do tempo no LCD
+}
+
+// Função para desenhar o carro 1
+void draw_car1(void) {
+  for(int i = 0; i <= loop1; i++) {
+    track.setPixelColor(((word)dist1 % NPIXELS) + i, track.COLOR1);
+  }
+}
+
+// Função para desenhar o carro 2
+void draw_car2(void) {
+  for(int i = 0; i <= loop2; i++) {
+    track.setPixelColor(((word)dist2 % NPIXELS) + i, track.COLOR2);
+  }
+}
+
+// Função principal do loop
+void loop() {   
+  // Verifica por comandos recebidos na serial
+  checkSerialCommand();
+  
+  for(int i = 0; i < NPIXELS; i++) {
+    track.setPixelColor(i, track.Color(0, 0, 0));
+  }
+
+  if ((ENABLE_RAMP == 1) && (VIEW_RAMP == 1)) {
+    for(int i = 0; i < (MED_RAMP - INI_RAMP); i++) {
+      track.setPixelColor(INI_RAMP + i, track.Color(24 + i * 4, 0, 24 + i * 4));
+    }
+    for(int i = 0; i < (END_RAMP - MED_RAMP); i++) {
+      track.setPixelColor(END_RAMP - i, track.Color(24 + i * 4, 0, 24 + i * 4));
+    }
+  }
+
+  if ((flag_sw1 == 1) && (digitalRead(PIN_P1) == 0)) {
+    flag_sw1 = 0;
+    speed1 += ACEL;
+  }
+
+  if ((flag_sw1 == 0) && (digitalRead(PIN_P1) == 1)) {
+    flag_sw1 = 1;
+  }
+
+  if (gravity_map[(word)dist1 % NPIXELS] < 127) {
+    speed1 -= kg * (127 - (gravity_map[(word)dist1 % NPIXELS]));
+  }
+
+  if (gravity_map[(word)dist1 % NPIXELS] > 127) {
+    speed1 += kg * ((gravity_map[(word)dist1 % NPIXELS]) - 127);
+  }
+
+  speed1 -= speed1 * kf; 
+
+  if ((flag_sw2 == 1) && (digitalRead(PIN_P2) == 0)) {
+    flag_sw2 = 0;
+    speed2 += ACEL;
+  }
+
+  if ((flag_sw2 == 0) && (digitalRead(PIN_P2) == 1)) {
+    flag_sw2 = 1;
+  }
+
+  if (gravity_map[(word)dist2 % NPIXELS] < 127) {
+    speed2 -= kg * (127 - (gravity_map[(word)dist2 % NPIXELS]));
+  }
+
+  if (gravity_map[(word)dist2 % NPIXELS] > 127) {
+    speed2 += kg * ((gravity_map[(word)dist2 % NPIXELS]) - 127);
+  }
+
+  speed2 -= speed2 * kf; 
+
+  dist1 += speed1;
+  dist2 += speed2;
+
+  if (dist1 > dist2) {
+    if (leader == 2) {
+      FBEEP = 440;
+      TBEEP = 10;
+    }
+    leader = 1;
+  } 
+
+  if (dist2 > dist1) {
+    if (leader == 1) {
+      FBEEP = 440 * 2;
+      TBEEP = 10;
+    }
+    leader = 2;
+  }
+
+  if (dist1 > NPIXELS * loop1) {
+    loop1++;
+    TBEEP = 10;
+    FBEEP = 440;
+  }
+
+  if (dist2 > NPIXELS * loop2) {
+    loop2++;
+    TBEEP = 10;
+    FBEEP = 440 * 2;
+  }
+
+if (loop1 > loop_max) {
+    sprintf(txbuff, "w1%c", EOL);
+    sendSerialCommand(txbuff); // Envia o comando de vencedor = 1
+    // Alteração para acender a cor do vencedor em todos os LEDs
+    for(int i = 0; i < NPIXELS; i++) {
+      track.setPixelColor(i, track.COLOR1);
+    }
+    track.show();
+    winner_fx(1);
+    loop1 = 0;
+    loop2 = 0;
+    dist1 = 0;
+    dist2 = 0;
+    speed1 = 0;
+    speed2 = 0;
+    timestamp = 0;
+    start_race();
+    
+}
+if (loop2 > loop_max) {
+    sprintf(txbuff, "w2%c", EOL);
+    sendSerialCommand(txbuff); // Envia o comando de vencedor = 2
+    // Alteração para acender a cor do vencedor em todos os LEDs
+    for(int i = 0; i < NPIXELS; i++) {
+      track.setPixelColor(i, track.COLOR2);
+    }
+    track.show();
+    winner_fx(2);
+    loop1 = 0;
+    loop2 = 0;
+    dist1 = 0;
+    dist2 = 0;
+    speed1 = 0;
+    speed2 = 0;
+    timestamp = 0;
+    start_race();
+}
+
+  if ((millis() & 512) == (512 * draworder)) {
+    if (draworder == 0) {
+      draworder = 1;
+    } else {
+      draworder = 0;
+    }
+  }
+
+  if (abs(round(speed1 * 100)) > abs(round(speed2 * 100))) {
+    draworder = 1;
+  }
+
+  if (abs(round(speed2 * 100)) > abs(round(speed1 * 100))) {
+    draworder = 0;
+  }
+
+  if (draworder == 0) {
+    draw_car1();
+    draw_car2();
+  } else {
+    draw_car2();
+    draw_car1();
+  }
+
+  track.show();
+
+  if (SMOTOR == 1) {
+    tone(PIN_AUDIO, FBEEP + int(speed1 * 440 * 2) + int(speed2 * 440 * 3));
+  }
+
+  delay(tdelay);
+
+  if (TBEEP > 0) {
+    TBEEP--;
+  } else {
+    FBEEP = 0;
+  }
+
+  cont_print++;
+
+  if (cont_print > 100) {
+    print_cars_position();
+    cont_print = 0;
+  }
+}
+
+// Função para verificar comandos recebidos na serial
+void checkSerialCommand() {
+  int clen = checkSerial(cmd);
+  if(clen == 0) return; // Nenhum comando recebido
+  if(clen < 0) { // Erro ao receber comando
+    sprintf(txbuff, "!1Erro ao ler comando serial: [%d]", clen); // Envia um aviso ao host
+    sendSerialCommand(txbuff);
+    return;
+  }
+
+  // clen > 0 ---> Comando com comprimento=clen pronto em cmd[]
+  switch (cmd[0]) {
+    case '#': // Handshake -> envia de volta
+      {
+        sprintf(txbuff, "#%c", EOL);
+        sendSerialCommand(txbuff);    
+      }
+      return;
+
+    case '@': // Entrar no "Modo de Configuração"
+      {
+        // envia de volta @OK
+        sprintf(txbuff, "@OK%c", EOL);
+        sendSerialCommand(txbuff);          
+      }
+      return;
+
+    case '?': // Obter ID do software
+      {
+        sprintf(txbuff, "%s%s%c", "?", softwareId, EOL);
+        sendSerialCommand(txbuff);    
+      }
+      return;
+
+    case '%': // Obter versão do software
+      {
+        sprintf(txbuff, "%s%s%c", "%", version, EOL);
+        sendSerialCommand(txbuff);    
+      }
+      return;    
+  }
+
+  // Se chegarmos aqui, o comando não é gerenciado por este software -> Responder <CommandId>NOK
+  sprintf(txbuff, "%cNOK%c", cmd[0], EOL);  
+  sendSerialCommand(txbuff);
+  return; 
+}
+
+// Função para enviar fase da corrida
+void send_race_phase(int phase) {
+  sprintf(txbuff, "R%d%c", phase, EOL);
+  sendSerialCommand(txbuff);
+}
+
+// Funções base para envio/recepção de comandos
+// Variáveis usadas apenas nestas funções
+Stream* _stream = &Serial;
+int _bufIdx;
+
+int checkSerial(char* buf) { 
+  while (_stream->available()) {
+    if(_bufIdx < REC_COMMAND_BUFLEN - 2) {
+      char data = _stream->read();
+      if(data == EOL) {
+        int cmsSize = _bufIdx;
+        buf[_bufIdx++] = '\0';
+        _bufIdx = 0;
+        return cmsSize;
+      } else {
+        buf[_bufIdx++] = data;
+      }
+    } else {
+      // buffer cheio 
+      // reset e retorna erro
+      buf[_bufIdx++] = '\0';
+      _bufIdx = 0;
+      return -2; 
+    }
+  }
+  return 0;
+}
+
+// Função para enviar comando serial
+void sendSerialCommand(char* str) {
+  // obter o comprimento do comando
+  int dlen = 0;
+  for(; dlen < TX_COMMAND_BUFLEN; dlen++ ) { 
+    if(*(str + dlen) == EOL ) {
+      dlen++; // envia EOC 
+      break;
+    }
+  }
+  _stream->write(str, dlen);
+  return;
+}
